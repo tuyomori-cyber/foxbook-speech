@@ -43,6 +43,26 @@ service単体の実機録音は、Voice Editorを使わず次で確認できる�
 python3 scripts/diagnose_recording.py --seconds 5
 ```
 
+## ウェイクワードの単独実験
+
+`diagnose_wakeword.py`は共有serviceとは別の実験用コマンドです。英語KWSモデルで`FOX`または`HEY FOX`の検出だけを試し、録音・認識の開始やFirefoxへの通知は行いません。マイク音声を保存しません。実行中は他の音声録音を同時に使わないでください。serviceとのマイク排他は未実装です。
+
+ReazonSpeech用環境の`../reazonspeech/.venv/bin/sherpa-onnx-keyword-spotter-alsa`と、次のモデルが必要です。公式配布モデルのREADMEにはApache License 2.0と記載されています。ファイルはGit管理しません。
+
+```bash
+mkdir -p models/kws
+curl -fL -o /tmp/foxbook-kws-gigaspeech.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
+tar -xjf /tmp/foxbook-kws-gigaspeech.tar.bz2 -C models/kws
+```
+
+```bash
+python3 scripts/diagnose_wakeword.py --word fox
+# Ctrl+Cで終了してから、もう一方を試す
+python3 scripts/diagnose_wakeword.py --word hey-fox
+```
+
+入力は既定のALSAデバイスを使います。別の入力を使う場合は`--device`で指定します。検出閾値は`--threshold`で変更できます（既定0.25）。英語モデルのため、日本語話者の発音での検出率・誤検出率とSurface上の負荷は未測定です。
+
 ## 状態
 
 - 文書の正本: [仕様書 v0.1](specification/foxbook-speech仕様書v0.1.md)
