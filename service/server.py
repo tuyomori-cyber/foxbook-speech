@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Final
 
@@ -36,6 +37,9 @@ class SpeechSocketServer:
         self.whisper = whisper or WhisperPipeline(DEFAULT_WHISPER)
         self.jobs: dict[str, WhisperJob] = {}
         self.tasks: dict[str, asyncio.Task] = {}
+        self.watchers: dict[str, asyncio.Task] = {}
+        self.auto_stopped: dict[str, str] = {}
+        self.reazon_users: dict[str, str] = {}
         self.reazon = reazon or DEFAULT_REAZON
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -58,6 +62,10 @@ class SpeechSocketServer:
                         await self._write(writer, event)
             while True:
                 request = await self._read(reader)
+                if (isinstance(request, dict) and request.get("action") == "stop_recording"
+                        and set(request) == {"version", "action", "recordingId"} and request.get("version") == 1
+                        and self.auto_stopped.get(session_id) == request.get("recordingId")):
+                    continue
                 if isinstance(request, dict) and request == {"version": 1, "action": "prepare_engine", "engine": "reazonspeech_k2"}:
                     try:
                         generation, initialization_ms = await self.reazon.prepare()
@@ -68,17 +76,32 @@ class SpeechSocketServer:
                         events = [self.state._error(None, "ENGINE_START_FAILED", str(exc))]
                 else:
                     events = self.state.handle(session_id, request)
+                if isinstance(request, dict) and request.get("action") == "start_recording" and events and events[0].get("event") == "started" and events[0].get("engine") == "reazonspeech_k2":
+                    owner = events[0]["recordingId"]
+                    self.reazon.acquire(owner)
+                    self.reazon_users[session_id] = owner
+                    try:
+                        generation, _ = await self.reazon.prepare()
+                        self.state.engine_generations["reazonspeech_k2"] = generation
+                        events[0]["engineGeneration"] = generation
+                    except (ReazonError, OSError) as exc:
+                        self._release_reazon(session_id, owner)
+                        events = self.state.fail(session_id, getattr(exc, "code", "ENGINE_START_FAILED"), str(exc))
                 await emit(events)
                 if isinstance(request, dict) and request.get("action") == "start_recording" and events and events[0].get("event") == "started":
+                    self.auto_stopped.pop(session_id, None)
                     try:
-                        self.jobs[session_id] = await self.whisper.start()
+                        job = await self.whisper.start()
+                        self.jobs[session_id] = job
+                        self.watchers[session_id] = asyncio.create_task(self._watch_recording(session_id, job, events[0]["recordingId"], events[0]["engine"], emit))
                     except (OSError, RuntimeError, FileNotFoundError) as exc:
+                        self._release_reazon(session_id)
                         await emit(self.state.fail(session_id, "RECORDING_FAILED", str(exc)))
                 elif isinstance(request, dict) and request.get("action") == "stop_recording" and events and events[0].get("event") == "stopping":
                     job = self.jobs.get(session_id)
                     if job:
                         self.tasks[session_id] = asyncio.create_task(self._finish(session_id, job, events[0]["recordingId"], self.state.lease.engine if self.state.lease else "whisper", emit))
-                elif isinstance(request, dict) and request.get("action") == "cancel_recording":
+                elif isinstance(request, dict) and request.get("action") == "cancel_recording" and events and events[0].get("event") == "cancelled":
                     await self._cancel(session_id)
         except (EOFError, ConnectionError, BrokenPipeError):
             pass
@@ -88,11 +111,43 @@ class SpeechSocketServer:
             if session_id is not None:
                 self.state.disconnect(session_id)
                 await self._cancel(session_id)
+                self.auto_stopped.pop(session_id, None)
             writer.close()
             try:
                 await writer.wait_closed()
             except (ConnectionError, BrokenPipeError):
                 pass
+
+    async def _watch_recording(self, session_id: str, job: WhisperJob, recording_id: str, engine: str, emit) -> None:
+        try:
+            returncode = await job.recording.wait()
+            lease = self.state.lease
+            if not lease or lease.session_id != session_id or lease.recording_id != recording_id or lease.phase != "recording":
+                return
+            if returncode != 0:
+                detail = (await job.recording.stderr.read()).decode("utf-8", errors="replace").strip() if job.recording.stderr else ""
+                lease = self.state.lease
+                if not lease or lease.session_id != session_id or lease.recording_id != recording_id or lease.phase != "recording":
+                    return
+                events = self.state.fail(session_id, "RECORDING_FAILED", detail or "録音が途中で終了しました。")
+                self.jobs.pop(session_id, None)
+                await self.whisper.cancel(job)
+                self._release_reazon(session_id, recording_id)
+                await emit(events)
+                return
+            job.stop_started_ns = time.monotonic_ns()
+            events = self.state.handle(session_id, {"version": 1, "action": "stop_recording", "recordingId": recording_id})
+            if not events or events[0].get("event") != "stopping":
+                return
+            self.auto_stopped[session_id] = recording_id
+            events[0]["reason"] = "recording_limit"
+            await emit(events)
+            lease = self.state.lease
+            if lease and lease.session_id == session_id and lease.recording_id == recording_id and lease.phase == "stopping":
+                self.tasks[session_id] = asyncio.create_task(self._finish(session_id, job, recording_id, engine, emit))
+        finally:
+            if self.watchers.get(session_id) is asyncio.current_task():
+                self.watchers.pop(session_id, None)
 
     async def _finish(self, session_id: str, job: WhisperJob, recording_id: str, engine: str, emit) -> None:
         try:
@@ -108,6 +163,7 @@ class SpeechSocketServer:
             else:
                 result = await self.whisper.recognize(job, conversion_ms)
             text = result.pop("text")
+            self._release_reazon(session_id, recording_id)
             await emit(self.state.succeed(session_id, text, **result))
         except TimeoutError as exc:
             await emit(self.state.fail(session_id, str(exc), "音声処理が時間内に終わりませんでした。"))
@@ -117,14 +173,23 @@ class SpeechSocketServer:
             await emit(self.state.fail(session_id, exc.code, exc.message))
         except (OSError, RuntimeError, UnicodeError) as exc:
             await emit(self.state.fail(session_id, str(exc), "音声処理に失敗しました。"))
+        except asyncio.CancelledError:
+            await self.whisper.cancel(job)
+            raise
         finally:
             self.jobs.pop(session_id, None)
             job.directory.cleanup()
             self.tasks.pop(session_id, None)
-            if engine == "reazonspeech_k2":
-                self.reazon.mark_idle()
+            self._release_reazon(session_id, recording_id)
 
     async def _cancel(self, session_id: str) -> None:
+        watcher = self.watchers.pop(session_id, None)
+        if watcher and watcher is not asyncio.current_task():
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
         task = self.tasks.pop(session_id, None)
         if task and task is not asyncio.current_task():
             task.cancel()
@@ -135,6 +200,13 @@ class SpeechSocketServer:
         job = self.jobs.pop(session_id, None)
         if job:
             await self.whisper.cancel(job)
+        self._release_reazon(session_id)
+
+    def _release_reazon(self, session_id: str, owner: str | None = None) -> None:
+        current = self.reazon_users.get(session_id)
+        if current is not None and (owner is None or owner == current):
+            del self.reazon_users[session_id]
+            self.reazon.release(current)
 
     @staticmethod
     async def _read(reader: asyncio.StreamReader) -> object:

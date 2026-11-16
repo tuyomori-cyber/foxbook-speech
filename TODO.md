@@ -4,6 +4,7 @@
 
 ## 現在
 
+- [x] 録音の30秒上限で自動的に変換・認識へ進む処理を実装・自動試験済み。dynabook G83/HSで自動停止後の結果表示と次の録音を確認した。
 - [x] 共通Host＋単一音声serviceの責務、境界、初期API、接続所有権、録音リース、engine共有、Voice Editor二Portを仕様化した。
 - [x] serviceの所有権・録音リース・状態遷移を外部プロセスから独立した状態コアと自動試験で実装した。
 - [x] serviceのUnix socket入口、接続開始検証、socket切断によるリース回収を実装した。
@@ -17,11 +18,12 @@
 - [x] 同一Workerの再利用を実機確認した（2回目もWorker世代1、認識171ms、停止から結果まで313ms）。
 - [x] 5分アイドル解放後のWorker再生成を実機確認した（Worker世代2、認識160ms、停止から結果まで264ms）。
 - [x] `fox-voice-editor` の音声Portと編集保存Portを分離し、Firefoxで両engineの録音・保存を確認した。
-- [ ] 【優先】録音中にキャンセルした場合、ReazonSpeech Workerが5分後も残る不具合を修正する。実機で`arecord`は終了、Workerは5分後も残存。`service/server.py`の`_cancel`経由では`_finish`内の`mark_idle()`が呼ばれない。準備のみ・切断・認識中取消も含め寿命管理を見直し、他session利用への影響と競合を考慮した自動試験・実機再確認を行う。
-- [ ] 録音・変換・認識中の取消／接続断で子プロセス、一時ファイル、リースの回収を検証する。
+- [x] 録音中キャンセル後のWorker解放漏れを修正。新端末で5分後のWorker解放と再読込後の復旧を実機確認した。準備のみの解放、複数利用者、録音中取消・切断は自動試験でも確認した。
+- [x] 変換中とWhisper／ReazonSpeech認識中の取消・接続断について、擬似子プロセスを待機させる自動試験でプロセス、一時ファイル、録音リースの回収を確認した。ReazonSpeechの変換中はWorkerのアイドル解放も確認した。
 
 ## 設計・実装前の確認
 
+- Surface Pro 4ではWhisperの性能が実用に足りないため、Whisper固有の計測や改善の優先度はかなり低い。ReazonSpeechを優先する。
 - [x] Native Host起動元ID、Host接続、service側sessionを対応付ける方式を決めた。
 - [x] `BUSY`、録音リース、取消、接続切断、古いイベント破棄の状態遷移を決めた。
 - [ ] Surface Pro 4で常駐serviceとReazonSpeech Workerのメモリ、初回準備、アイドル解放を測り、systemdの常駐／socket activationを選ぶ。

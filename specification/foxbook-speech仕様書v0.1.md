@@ -2,7 +2,7 @@
 
 - 文書バージョン: 0.1
 - 作成日: 2026-11-16
-- 状態: 一部実装（Whisper経路とsystemd unit templateは自動試験済み、実機・ReazonSpeechは未実装）
+- 状態: 共有serviceと両エンジンを実装済み。Firefox実機で基本動作・切断・30秒上限を確認済み。Surface共有service実測と端末固有マイク補正は未完了。
 - 対象: Linux / Firefox Native Messaging / Unix domain socket / Whisper / ReazonSpeech
 
 ## 1. 目的と非目標
@@ -29,9 +29,9 @@ adapterとservice間のIPCはUTF-8の改行区切りJSONとする。adapterは�
 
 - 録音はservice側が固定した入力設定で行い、初期上限は30秒とする。
 - 変換は16 kHz、モノラル、PCM WAVへ固定する。
-- `whisper` と `reazonspeech_k2` だけをエンジン名として受け入れる。モデル・実行ファイル・言語・端末設定のパスはservice設定で固定し、拡張は指定できない。初期実装の標準許可設定はWhisperだけとし、ReazonSpeechはWorker実装後に有効化する。
+- `whisper` と `reazonspeech_k2` だけをエンジン名として受け入れる。モデル・実行ファイル・言語のパスはservice側で固定し、拡張は指定できない。標準許可設定ではVoice Editorに両エンジンを許可する。
 - Whisperは要求ごとのCLI起動を基本とする。ReazonSpeechはengine設定ごとのWorkerをservice側で管理し、互換性・メモリ上限を満たす範囲で再利用する。
-- Surface固有のマイク補正は端末識別を含むservice側設定で明示有効にした場合だけ実施する。他端末に同じミキサー操作を適用しない。
+- 現在の共有serviceはマイク補正を行わない。Surface固有の補正設定と他端末への誤適用防止は未決定である。
 
 ## 4. 認可と接続所有権
 
@@ -42,7 +42,7 @@ adapterとservice間のIPCはUTF-8の改行区切りJSONとする。adapterは�
 - Unix socketは当該Linuxユーザーだけが扱えるruntime directory内へ作る。同一Linuxユーザーの任意プロセスを敵対者とみなす認証は本仕様の範囲外であり、Firefox拡張の認可境界はNative Messaging manifestとadapterの起動元ID検証で維持する。
 - Native Messagingとservice IPCの入力はJSONオブジェクトだけとし、サイズ上限は1 MiB以下で統一する。未知のキー、未知の操作、未知のエンジンを拒否する。
 
-## 5. 共通音声API v1（案）
+## 5. 共通音声API v1
 
 すべての要求とイベントは`version: 1`を持つ。各要求の必須キーは`version`と`action`であり、表の「追加本文」に示すキー以外を含めない。初期版では一つのadapter接続に一件だけの操作を許可し、音声データ・任意パス・任意コマンド・`clientId`は含めない。
 
@@ -71,7 +71,7 @@ idle → recording → stopping → converting → recognizing → idle
 - `prepare_microphone`と選択engineの`prepare_engine`が成功するまで`start_recording`を拒否する。マイク準備はservice全体で直列化し、録音リース中は`BUSY`で拒否する。
 - `start_recording`は、マイク・engine準備と所有sessionを原子的に確認してから、全serviceで一件だけの録音リースを作る。リースは`recordingId`、所有session、engine、現在phase、各phaseの期限を持つ。
 - リースは`start_recording`から`result`、`error`、`cancelled`のいずれかまで保持する。したがって録音中だけでなく、変換・認識中の新規開始も`BUSY`で拒否する。待ち行列は持たない。
-- 初期値の期限は録音30秒、停止待ち2秒、変換10秒、Whisper／ReazonSpeech認識60秒とする。期限超過は該当プロセスを終了し、固定のtimeoutエラーを返す。
+- 録音は最大30秒とし、録音プロセスの正常終了後は`reason: recording_limit`付き`stopping`イベントから自動的に変換・認識へ進む。異常終了はエラーにする。停止待ちは2秒、変換は10秒、Whisper／ReazonSpeech認識は60秒を上限とする。
 - `recordingId`はserviceが生成し、停止・取消・結果・エラーで照合する。別セッションのIDは`STALE_RECORDING`として拒否する。
 - adapterのsocket切断、Native Host終了、service停止、録音・変換・認識タイムアウトでは、子プロセスを終了し一時ファイルとリースを回収する。利用側の取消要求だけに依存しない。
 - 遅延したイベントは、利用側が`recordingId`とengine世代を照合して破棄できる形式を維持する。
@@ -79,10 +79,10 @@ idle → recording → stopping → converting → recognizing → idle
 ## 7. エンジンの共有単位
 
 - engine選択はsessionごとの準備状態であり、service全体の選択状態ではない。ある利用者の`prepare_engine`や切替が、別利用者の準備済みengineを停止・切替しない。
-- `whisper`は固定モデル設定のCLIを要求ごとに起動する。準備は実行ファイル・モデル・設定の検証だけであり、常駐Workerを持たない。
-- `reazonspeech_k2`は`engine名 + service側モデル設定revision`をキーに、最大一つのWorkerをserviceが保持する。同じキーへの同時`prepare_engine`は一回のロードに合流させ、ロード完了を待つ全sessionへ状態イベントを返す。
-- Workerの`engineGeneration`は作成ごとに増加させる。異常終了、設定revision変更、明示したアイドル解放の後に作り直したWorkerは新しい世代とする。
-- ReazonSpeech Workerは最後の利用から5分後に解放する。保持時間とメモリ上限はSurface実測後にservice側設定だけで変更し、ブラウザAPIには公開しない。
+- `whisper`は固定モデル設定のCLIを要求ごとに起動し、常駐Workerを持たない。準備応答ではモデル等の存在を検証せず、録音開始時に必要ファイルを検証する。
+- `reazonspeech_k2`のWorkerは固定モデル設定でservice全体に最大一つ保持する。同時`prepare_engine`は直列化して同一Workerを再利用する。
+- Workerの`engineGeneration`は作成ごとに増加させる。異常終了やアイドル解放の後に作り直したWorkerは新しい世代とする。
+- ReazonSpeech Workerは利用終了から5分後に解放する。保持時間の変更やメモリ上限はSurface実測後の検討事項であり、ブラウザAPIには公開しない。
 - 拡張ごとに利用を許可するengineはservice側許可設定で固定する。要求本文で未知のengineや許可されないengineを指定しても実行しない。
 
 ## 8. Voice Editorの二つのPort
@@ -92,7 +92,7 @@ Voice Editorは一つの`port`を次の二つへ分割する。
 | Port | 接続先 | 担当 | 切断時の扱い |
 | --- | --- | --- | --- |
 | `speechPort` | `foxbook_speech` | マイク準備、engine準備、録音・停止・取消、状態・認識結果 | 録音中のservice sessionは回収される。録音UIだけを無効化し、手入力・既存編集は維持する。 |
-| `libraryPort` | `fox_voice_editor` | `load_library`、`save_library`だけ | ライブラリ未読込・保存失敗は既存と同じく編集開始を抑止し、ローカル状態を勝手に破棄しない。 |
+| `libraryPort` | `fox_voice_editor` | `load_library`、`save_library`だけ | 切断を検知すると進行中の録音・認識をキャンセルし、検知後の結果を破棄する。編集・新規録音を抑止し、既存内容を保持する。 |
 
 - 接続と再接続、エラー表示、状態変数、メッセージ検証はPortごとに独立させる。片方から受けたイベントをもう片方の状態として扱わない。
 - Voice Editorはライブラリの初期読込成功と`speechPort`のマイク・選択engine準備成功の両方を確認してから録音ボタンを有効にする。
@@ -101,7 +101,7 @@ Voice Editorは一つの`port`を次の二つへ分割する。
 
 ## 9. 運用と検証
 
-自動試験では、Native Messagingフレーム、adapterとserviceの接続所有権、擬似コマンドによるWhisperの録音・停止・変換・認識・取消・一時ファイル回収、`BUSY`、socket経由のphase順序を確認済みである。空結果、各タイムアウト、Host切断、service再起動、ReazonSpeechの再利用・異常終了は追加対象とする。
+自動試験ではNative Messaging、接続所有権、擬似プロセスによる録音・変換・認識の取消・切断と回収、Worker寿命、30秒相当の自動停止・競合を確認した。Firefox実機では両エンジン、録音中の両Port切断、Workerのキャンセル後解放、30秒自動認識を確認した。実機の認識中切断など未確認範囲は[TODO](../TODO.md)と共有検証記録を参照する。
 
 Surface Pro 4では、マイク補正、連続3回以上の録音、初回・継続時の時間、CPU・メモリ、Worker回収、拡張再読み込み後の回復を実機確認する。
 

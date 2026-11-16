@@ -22,6 +22,15 @@ class ReazonManager:
         self.generation = 0
         self._lock = asyncio.Lock()
         self._idle: asyncio.Task | None = None
+        self._users: set[str] = set()
+
+    def acquire(self, owner: str) -> None:
+        self._users.add(owner)
+        self._idle = None
+
+    def release(self, owner: str) -> None:
+        self._users.discard(owner)
+        self.mark_idle()
 
     def validate(self) -> None:
         for path in (self.python, self.worker, self.model / "encoder-epoch-99-avg-1.int8.onnx",
@@ -31,9 +40,9 @@ class ReazonManager:
 
     async def prepare(self) -> tuple[int, int]:
         async with self._lock:
-            if self._idle:
-                self._idle.cancel(); self._idle = None
+            self._idle = None
             if self.process and self.process.returncode is None:
+                self.mark_idle()
                 return self.generation, 0
             await self.stop()
             self.validate()
@@ -41,13 +50,14 @@ class ReazonManager:
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             try:
                 event = await self._read(45)
-            except Exception:
+            except BaseException:
                 await self.stop()
                 raise
             if event.get("event") != "ready" or not isinstance(event.get("initializationMs"), int):
                 await self.stop()
                 raise ReazonError(event.get("code", "ENGINE_PROTOCOL_ERROR"), event.get("message", "Workerを準備できませんでした。"))
             self.generation += 1
+            self.mark_idle()
             return self.generation, event["initializationMs"]
 
     async def recognize(self, request_id: str, wav: Path) -> dict:
@@ -59,26 +69,29 @@ class ReazonManager:
             process.stdin.write(payload); await process.stdin.drain()
             try:
                 event = await self._read(60)
-            except asyncio.CancelledError:
+            except BaseException:
                 await self.stop()
                 raise
             if event.get("event") != "result" or event.get("requestId") != request_id or not isinstance(event.get("text"), str):
+                await self.stop()
                 raise ReazonError(event.get("code", "RECOGNITION_FAILED"), event.get("message", "ReazonSpeech認識に失敗しました。"))
             return event
 
     def mark_idle(self) -> None:
-        if self.process and self.process.returncode is None and not self._idle:
+        if not self._users and self.process and self.process.returncode is None and not self._idle:
             self._idle = asyncio.create_task(self._stop_when_idle())
 
     async def _stop_when_idle(self) -> None:
         try:
             await asyncio.sleep(self.idle_seconds)
             async with self._lock:
-                await self.stop()
+                if self._idle is asyncio.current_task() and not self._users:
+                    await self.stop()
         except asyncio.CancelledError:
             pass
         finally:
-            self._idle = None
+            if self._idle is asyncio.current_task():
+                self._idle = None
 
     async def stop(self) -> None:
         process, self.process = self.process, None

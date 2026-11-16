@@ -21,12 +21,14 @@ class FakeWhisperPipeline:
 
     async def start(self):
         directory = tempfile.TemporaryDirectory()
-        job = SimpleNamespace(directory=directory, root=Path(directory.name), stopped=False, stop_started_ns=None)
+        job = SimpleNamespace(directory=directory, root=Path(directory.name), stopped=False, stop_started_ns=None,
+                              recording=FakeRecording())
         self.jobs.append(job)
         return job
 
     async def stop_recording(self, job) -> None:
         job.stopped = True
+        job.recording.complete(0)
 
     async def convert(self, job) -> int:
         self.assert_stopped(job)
@@ -38,6 +40,7 @@ class FakeWhisperPipeline:
                 "recognitionMs": 4, "modelName": "fake.bin"}
 
     async def cancel(self, job) -> None:
+        job.recording.complete(-15)
         job.directory.cleanup()
 
     @staticmethod
@@ -46,7 +49,31 @@ class FakeWhisperPipeline:
             raise AssertionError("録音停止前に後続処理が始まりました")
 
 
+class FakeRecording:
+    def __init__(self):
+        self.done = asyncio.Event()
+        self.returncode = None
+        self.stderr = None
+
+    def complete(self, code):
+        self.returncode = code
+        self.done.set()
+
+    async def wait(self):
+        await self.done.wait()
+        return self.returncode
+
+
 class FakeReazonManager:
+    def __init__(self):
+        self.owners = set()
+
+    def acquire(self, owner: str) -> None:
+        self.owners.add(owner)
+
+    def release(self, owner: str) -> None:
+        self.owners.discard(owner)
+
     async def prepare(self) -> tuple[int, int]:
         return 7, 42
 
@@ -69,7 +96,8 @@ class SpeechSocketServerTest(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.temp.name) / "speech.sock"
         state = SpeechState({VOICE: frozenset(("whisper", "reazonspeech_k2")), OTHER: frozenset(("whisper",))})
         self.pipeline = FakeWhisperPipeline()
-        self.server = await start_server(self.path, state, self.pipeline, FakeReazonManager())
+        self.reazon = FakeReazonManager()
+        self.server = await start_server(self.path, state, self.pipeline, self.reazon)
 
     async def _cleanup(self) -> None:
         if hasattr(self, "server"):
@@ -152,6 +180,102 @@ class SpeechSocketServerTest(unittest.IsolatedAsyncioTestCase):
         events = [await self.receive(reader) for _ in range(4)]
         self.assertEqual(events[-1]["text"], "Reazon結果")
         self.assertEqual(events[-1]["engine"], "reazonspeech_k2")
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_reazon_recording_cancel_and_disconnect_release_owner(self) -> None:
+        for disconnect in (False, True):
+            reader, writer, _ = await self.open(VOICE)
+            for request in (
+                {"version": 1, "action": "prepare_microphone"},
+                {"version": 1, "action": "prepare_engine", "engine": "reazonspeech_k2"},
+                {"version": 1, "action": "start_recording"},
+            ):
+                await self.send(writer, request)
+                event = await self.receive(reader)
+            self.assertIn(event["recordingId"], self.reazon.owners)
+            if not disconnect:
+                await self.send(writer, {"version": 1, "action": "cancel_recording", "recordingId": event["recordingId"]})
+                self.assertEqual((await self.receive(reader))["event"], "cancelled")
+            writer.close()
+            await writer.wait_closed()
+            for _ in range(20):
+                if not self.reazon.owners:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertFalse(self.reazon.owners)
+
+    async def test_recording_exit_automatically_stops_and_recognizes(self) -> None:
+        reader, writer, _ = await self.open(VOICE)
+        for request in (
+            {"version": 1, "action": "prepare_microphone"},
+            {"version": 1, "action": "prepare_engine", "engine": "whisper"},
+            {"version": 1, "action": "start_recording"},
+        ):
+            await self.send(writer, request)
+            started = await self.receive(reader)
+        while not self.pipeline.jobs:
+            await asyncio.sleep(0)
+        self.pipeline.jobs[-1].recording.complete(0)
+        stopping = await self.receive(reader)
+        self.assertEqual((stopping["event"], stopping["reason"]), ("stopping", "recording_limit"))
+        # A manual stop racing with the automatic transition must not create
+        # a second result or an error.
+        await self.send(writer, {"version": 1, "action": "stop_recording", "recordingId": started["recordingId"]})
+        events = [await self.receive(reader) for _ in range(3)]
+        self.assertEqual([event["event"] for event in events], ["processing", "processing", "result"])
+        await self.send(writer, {"version": 1, "action": "get_status"})
+        self.assertEqual((await self.receive(reader))["state"], "idle")
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_recording_failure_does_not_produce_result(self) -> None:
+        reader, writer, _ = await self.open(VOICE)
+        for request in (
+            {"version": 1, "action": "prepare_microphone"},
+            {"version": 1, "action": "prepare_engine", "engine": "whisper"},
+            {"version": 1, "action": "start_recording"},
+        ):
+            await self.send(writer, request)
+            await self.receive(reader)
+        while not self.pipeline.jobs:
+            await asyncio.sleep(0)
+        job = self.pipeline.jobs[-1]
+        job.recording.complete(1)
+        event = await self.receive(reader)
+        self.assertEqual(event["code"], "RECORDING_FAILED")
+        self.assertFalse(job.root.exists())
+        await self.send(writer, {"version": 1, "action": "get_status"})
+        self.assertEqual((await self.receive(reader))["state"], "idle")
+        writer.close()
+        await writer.wait_closed()
+
+    async def test_cancel_after_automatic_stop_releases_job(self) -> None:
+        entered = asyncio.Event()
+        async def wait_conversion(job):
+            entered.set()
+            await asyncio.Event().wait()
+        self.pipeline.convert = wait_conversion
+        reader, writer, _ = await self.open(VOICE)
+        for request in (
+            {"version": 1, "action": "prepare_microphone"},
+            {"version": 1, "action": "prepare_engine", "engine": "whisper"},
+            {"version": 1, "action": "start_recording"},
+        ):
+            await self.send(writer, request)
+            started = await self.receive(reader)
+        while not self.pipeline.jobs:
+            await asyncio.sleep(0)
+        job = self.pipeline.jobs[-1]
+        job.recording.complete(0)
+        self.assertEqual((await self.receive(reader))["event"], "stopping")
+        self.assertEqual((await self.receive(reader))["state"], "converting")
+        await entered.wait()
+        await self.send(writer, {"version": 1, "action": "cancel_recording", "recordingId": started["recordingId"]})
+        self.assertEqual((await self.receive(reader))["event"], "cancelled")
+        await self.send(writer, {"version": 1, "action": "get_status"})
+        self.assertEqual((await self.receive(reader))["state"], "idle")
+        self.assertFalse(job.root.exists())
         writer.close()
         await writer.wait_closed()
 

@@ -108,6 +108,9 @@ class WhisperPipeline:
             except asyncio.TimeoutError as exc:
                 process.kill(); await process.wait()
                 raise TimeoutError("RECOGNITION_TIMEOUT") from exc
+            except asyncio.CancelledError:
+                await self.cancel(job)
+                raise
             finally:
                 job.active_process = None
         transcript = transcript_base.with_suffix(".txt")
@@ -149,6 +152,9 @@ class WhisperPipeline:
         except asyncio.TimeoutError as exc:
             process.kill(); await process.wait()
             raise TimeoutError(f"{prefix}_TIMEOUT") from exc
+        except asyncio.CancelledError:
+            await self.cancel(job)
+            raise
         finally:
             job.active_process = None
         if process.returncode != 0:
