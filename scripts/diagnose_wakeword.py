@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_NAME = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
@@ -22,14 +23,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--word", choices=KEYWORDS, default="fox", help="検出語句（既定: fox）")
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR, help="公式英語KWSモデルのディレクトリ")
     parser.add_argument("--bin-dir", type=Path, default=BIN_DIR, help="sherpa-onnx実行ファイルのディレクトリ")
+    parser.add_argument("--backend", choices=("arecord", "alsa", "portaudio"), default="arecord", help="マイク入力方式（既定: arecord）")
     parser.add_argument("--device", default="default", help="ALSA入力デバイス（既定: default）")
     parser.add_argument("--wav", type=Path, help="マイクの代わりにモノラルPCM WAVを解析")
     parser.add_argument("--threshold", type=float, default=0.25, help="検出閾値0〜1（既定: 0.25）")
+    parser.add_argument("--show-level", action="store_true", help="arecord入力のピークを2秒ごとに表示")
     args = parser.parse_args(argv)
     if not 0 <= args.threshold <= 1:
         parser.error("--thresholdは0〜1で指定してください")
 
-    executable = args.bin_dir / ("sherpa-onnx-keyword-spotter" if args.wav else "sherpa-onnx-keyword-spotter-alsa")
+    executable = args.bin_dir / ("sherpa-onnx-keyword-spotter" if args.wav else
+                                  "python" if args.backend == "arecord" else
+                                  "sherpa-onnx-keyword-spotter-alsa" if args.backend == "alsa" else
+                                  "sherpa-onnx-keyword-spotter-microphone")
+    if not args.wav and args.backend == "portaudio" and args.device != "default":
+        parser.error("--deviceはarecordかALSA入力でのみ指定できます")
+    if args.show_level and (args.wav or args.backend != "arecord"):
+        parser.error("--show-levelはarecord入力でのみ使用できます")
+    if not args.wav and args.backend == "arecord" and not shutil.which("arecord"):
+        print("arecordが見つかりません。", file=sys.stderr)
+        return 1
     files = {
         "tokens": args.model_dir / "tokens.txt",
         "encoder": args.model_dir / f"encoder-{STEM}.int8.onnx",
@@ -44,12 +57,22 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="foxbook-kws-") as directory:
         keywords = Path(directory) / "keywords.txt"
         keywords.write_text(KEYWORDS[args.word] + "\n", encoding="utf-8")
-        command = [str(executable), *(f"--{name}={path}" for name, path in files.items()),
-                   f"--keywords-file={keywords}", f"--keywords-threshold={args.threshold}",
-                   "--num-threads=1", "--provider=cpu", "--print-args=false",
-                   str(args.wav) if args.wav else args.device]
+        if not args.wav and args.backend == "arecord":
+            command = [str(executable), str(ROOT / "scripts" / "wakeword_arecord.py"),
+                       "--model-dir", str(args.model_dir), "--keywords-file", str(keywords),
+                       "--threshold", str(args.threshold), "--device", args.device]
+            if args.show_level:
+                command.append("--show-level")
+        else:
+            command = [str(executable), *(f"--{name}={path}" for name, path in files.items()),
+                       f"--keywords-file={keywords}", f"--keywords-threshold={args.threshold}",
+                       "--num-threads=1", "--provider=cpu", "--print-args=false"]
+        if args.wav:
+            command.append(str(args.wav))
+        elif args.backend == "alsa":
+            command.append(args.device)
         if not args.wav:
-            print(f"{args.word.upper().replace('-', ' ')} を待機中。終了は Ctrl+C。録音は保存しません。", flush=True)
+            print(f"{args.word.upper().replace('-', ' ')} の検出を準備中。音声は保存しません。", flush=True)
         try:
             return subprocess.run(command, check=False).returncode
         except KeyboardInterrupt:
