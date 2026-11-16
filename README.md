@@ -2,7 +2,7 @@
 
 Foxbook の Firefox 拡張へ、ローカル音声認識を共通機能として提供するための基盤です。Native Messaging Host は Firefox との入出力と許可済み拡張の入口だけを担当し、録音・変換・マイク排他・Whisper／ReazonSpeech の実行は単一のローカルサービスが担当します。
 
-現時点では設計・導入準備段階であり、実行可能な Host／service はまだありません。既存の `fox-voice-editor` が最初の移行対象です。
+`foxbook_speech` Native Messaging adapter、Unix socket service、Whisperの録音・変換・認識パイプライン、およびsystemd --user unit templateは実装済みです。実機録音確認、ReazonSpeech Worker、Voice Editor移行は完了していません。既存の `fox-voice-editor` が最初の移行対象です。
 
 ## 責務
 
@@ -27,6 +27,22 @@ Firefox 拡張
 
 Native Messaging Host のコードと登録名は一つですが、Firefox は接続ごとにHostプロセスを起動します。そのためマイク状態とモデルをHost自身へ保持せず、serviceで一元管理します。
 
+`native_host/foxbook_speech.py` はNative Messagingのバイナリフレームを検証してUnix socketへ中継します。HostをFirefoxへ登録するスクリプトは `scripts/install_host.py` です。serviceはWhisper用に `arecord`、`ffmpeg`、`whisper-cli` と固定モデルを使う実行層まで備えます。service起動unitはあるものの、実機確認とVoice Editor移行が未完了のため、Firefoxから利用可能とは扱いません。
+
+`systemd/foxbook-speech.service.in` はユーザー単位の常駐service templateです。導入時は次を順に実行します。`--enable` はserviceを起動するため、実機の固定パスと依存ファイルを確認した後にだけ指定します。
+
+```bash
+python3 scripts/install_host.py
+python3 scripts/install_service.py
+python3 scripts/install_service.py --enable
+```
+
+service単体の実機録音は、Voice Editorを使わず次で確認できる。実行中は指定秒数だけ話し、最後の`result`イベントの`text`を確認する。`Ctrl+C`なら録音を取消する。
+
+```bash
+python3 scripts/diagnose_recording.py --seconds 5
+```
+
 ## 状態
 
 - 文書の正本: [仕様書 v0.1](specification/foxbook-speech仕様書v0.1.md)
@@ -38,4 +54,4 @@ Native Messaging Host のコードと登録名は一つですが、Firefox は�
 
 初期版では利用者の明示操作で録音を開始し、同時要求は待ち行列に入れず `BUSY` で拒否します。ブラウザから任意コマンド、モデル／実行ファイル／音声ファイルのパス、音声バイト列は受け取りません。
 
-Whisper は認識要求ごとにCLIを起動し、ReazonSpeech はservice側で再利用可能なWorkerとして管理します。モデルの配置と端末固有のマイク補正は、service側の固定設定だけで決めます。
+Whisper は認識要求ごとにCLIを起動します。ReazonSpeech K2はservice全体で一つのWorkerを再利用し、最後の利用から5分で解放します。モデルの配置と端末固有のマイク補正は、service側の固定設定だけで決めます。実機診断では `--engine reazonspeech_k2` を指定します。

@@ -1,0 +1,19 @@
+[Unit]
+Description=Foxbook shared local speech service
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_ROOT@
+RuntimeDirectory=foxbook-speech
+RuntimeDirectoryMode=0700
+UMask=0077
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m service.server --socket %t/foxbook-speech/foxbook-speech.sock
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
