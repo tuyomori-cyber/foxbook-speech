@@ -10,12 +10,26 @@ import time
 from diagnose_wakeword import STEM
 
 
-def process_pcm(spotter, source, on_ready=print, show_level=False):
+def process_cpu_seconds():
+    usage = __import__("resource").getrusage(__import__("resource").RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
+
+
+def process_rss_kib():
+    for line in Path("/proc/self/status").read_text().splitlines():
+        if line.startswith("VmRSS:"):
+            return int(line.split()[1])
+    return -1
+
+
+def process_pcm(spotter, source, on_ready=print, show_level=False, report_every=0):
     stream = spotter.create_stream()
     ready = False
     peak = 0.0
     right_peak = 0.0
     next_level = time.monotonic() + 2
+    last_report = time.monotonic()
+    last_cpu = process_cpu_seconds()
     while True:
         chunk = source.read(8192)
         if not chunk:
@@ -45,6 +59,13 @@ def process_pcm(spotter, source, on_ready=print, show_level=False):
             if result:
                 print(f"検出: {result}", flush=True)
                 spotter.reset_stream(stream)
+        now = time.monotonic()
+        elapsed = now - last_report
+        if report_every and elapsed >= report_every:
+            current_cpu = process_cpu_seconds()
+            print(f"負荷: CPU {(current_cpu - last_cpu) / elapsed * 100:.2f}% / RSS {process_rss_kib()} KiB", flush=True)
+            last_report = now
+            last_cpu = current_cpu
 
 
 def main():
@@ -54,7 +75,10 @@ def main():
     parser.add_argument("--threshold", type=float, required=True)
     parser.add_argument("--device", required=True)
     parser.add_argument("--show-level", action="store_true")
+    parser.add_argument("--report-every", type=int, default=10, help="CPU/RSS表示間隔。0で非表示（既定: 10）")
     args = parser.parse_args()
+    if args.report_every < 0:
+        parser.error("--report-everyは0以上で指定してください")
     try:
         import sherpa_onnx
         model = args.model_dir
@@ -64,7 +88,7 @@ def main():
             keywords_file=str(args.keywords_file), keywords_threshold=args.threshold, num_threads=1, provider="cpu")
         process = subprocess.Popen(["arecord", "-q", "-D", args.device, "-f", "cd", "-t", "raw", "-"], stdout=subprocess.PIPE)
         try:
-            process_pcm(spotter, process.stdout, lambda message: print(message, flush=True), args.show_level)
+            process_pcm(spotter, process.stdout, lambda message: print(message, flush=True), args.show_level, args.report_every)
             code = process.wait()
             print(f"録音入力が終了しました（終了コード: {code}）。", file=sys.stderr)
             return code or 1

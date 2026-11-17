@@ -88,4 +88,4 @@ class WakewordDiagnosticTest(unittest.TestCase):
                 self.assertEqual(diagnose.main(["--show-level", "--model-dir", str(root), "--bin-dir", str(root)]), 0)
                 command = run.call_args.args[0]
                 self.assertTrue(command[1].endswith("wakeword_arecord.py"))
-                self.assertEqual(command[-3:], ["--device", "default", "--show-level"])
+                self.assertEqual(command[-5:], ["--device", "default", "--show-level", "--report-every", "10"])

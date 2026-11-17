@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 
 HOST_NAME = "foxbook_speech"
-EXTENSIONS = ["fox-voice-editor@foxbook.example"]
+EXTENSIONS = ["fox-voice-editor@foxbook.example", "the-session-tools@example.invalid"]
 HOST = Path(__file__).resolve().parents[1] / "native_host/foxbook_speech.py"
 MANIFEST = Path.home() / ".mozilla/native-messaging-hosts" / f"{HOST_NAME}.json"
 

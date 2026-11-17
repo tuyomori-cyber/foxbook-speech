@@ -15,6 +15,7 @@ class Session:
     microphone_ready: bool = False
     engine: str = "whisper"
     ready_engines: set[str] = field(default_factory=set)
+    wakeword_active: bool = False
 
 
 @dataclass
@@ -65,6 +66,8 @@ class SpeechState:
             "stop_recording": {"version", "action", "recordingId"},
             "cancel_recording": {"version", "action", "recordingId"},
             "get_status": {"version", "action"},
+            "start_wakeword": {"version", "action"},
+            "stop_wakeword": {"version", "action"},
         }
         if action not in allowed or set(request) != allowed[action]:
             return [self._error(None, "INVALID_REQUEST", "要求形式が正しくありません。")]
@@ -81,6 +84,16 @@ class SpeechState:
                                 state=state, microphoneReady=session.microphone_ready, engine=session.engine,
                                 engineStatus="ready" if session.engine in session.ready_engines else "uninitialized",
                                 engineGeneration=self.engine_generations[session.engine])]
+        if action == "start_wakeword":
+            if self.lease:
+                return [self._error(self.lease.recording_id, "BUSY", "他の録音または認識を処理中です。")]
+            if not session.microphone_ready or session.engine not in session.ready_engines:
+                return [self._error(None, "NOT_READY", "マイクと認識エンジンの準備が必要です。")]
+            session.wakeword_active = True
+            return [self._event("wakeword_waiting", state="waiting")]
+        if action == "stop_wakeword":
+            session.wakeword_active = False
+            return [self._event("wakeword_stopped", state="idle")]
         if action == "start_recording":
             if self.lease:
                 return [self._error(self.lease.recording_id, "BUSY", "他の録音または認識を処理中です。")]

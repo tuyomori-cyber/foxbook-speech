@@ -37,6 +37,18 @@ python3 scripts/install_service.py
 python3 scripts/install_service.py --enable
 ```
 
+### THE SESSION TOOLS音声操作の導入
+
+`FOX`によるメトロノーム音声操作には、上記に加えてネイティブKWSのビルドとKWSモデルが必要です。初回だけ順に実行し、その後はTHE SESSION TOOLSを再読み込みします。
+
+```bash
+make -C native native-kws
+python3 scripts/install_host.py
+systemctl --user restart foxbook-speech
+```
+
+Host登録はVoice EditorとTHE SESSION TOOLSの両方を許可する。The Sessionを開いた時、LEDが緑の「FOXを待機中」なら利用可能である。検出中はserviceがKWSを止めてマイクを解放し、3秒のReazonSpeech認識後に待機へ戻る。Voice Editorの手動録音は変更しない。必要なモデルや実行ファイルが不足するとLEDは赤になる。
+
 service単体の実機録音は、Voice Editorを使わず次で確認できる。実行中は指定秒数だけ話し、最後の`result`イベントの`text`を確認する。`Ctrl+C`なら録音を取消する。
 
 ```bash
@@ -63,7 +75,25 @@ python3 scripts/diagnose_wakeword.py --word hey-fox
 
 入力は`arecord`の既定デバイスを使い、左チャンネルをリアルタイムで検出器へ渡します。別のALSA入力は`--device`で指定できます。比較用に`--backend alsa`と`--backend portaudio`も残しています。検出閾値は`--threshold`で変更できます（既定0.25）。英語モデルのため、日本語話者の発音での検出率・誤検出率とSurface上の負荷は未測定です。
 
-検出しない場合は`--show-level`を付けると、音声を保存せず入力のピークを2秒ごとに表示できます。話すと値が上がるか確認してください。
+検出しない場合は`--show-level`を付けると、音声を保存せず入力のピークを2秒ごとに表示できます。話すと値が上がるか確認してください。Python版も既定で10秒ごとに区間CPU使用率とプロセス自身のRSSを表示します。`--report-every 0`で止められます。
+
+### C++ネイティブ版の比較診断
+
+Pythonラッパーの常駐コストを含めない比較用に、同じ`sherpa-onnx`配布物の安定C ABIへC++から直接つなぐ診断アプリを用意しています。Python版と同じ英語KWSモデル、`FOX`、既定ALSA入力の左チャンネル、閾値`0.25`、推論スレッド1本を使います。サービスやFirefoxへは接続せず、音声も保存しません。
+
+`sherpa-onnx`を入れた既存の`../reazonspeech/.venv`を使う場合は、次でビルドして実行します。起動後は10秒ごとに、その区間のCPU使用率とプロセス自身のRSSを表示します。`--show-level`はPython版と同じく2秒ごとの入力ピークを表示します。`Ctrl+C`で終了してください。
+
+```bash
+make -C native native-kws
+build/native/wakeword_kws --model-dir models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
+```
+
+USBマイクのデバイスを明示する場合は`--device`を指定します。入力ピークも同時に確認するなら`--show-level`を加えます。別のPython環境を使う場合は、ビルド時に`sherpa_onnx`パッケージへのパスを渡します。
+
+```bash
+make -C native native-kws SHERPA_ONNX_PREFIX=/path/to/site-packages/sherpa_onnx
+build/native/wakeword_kws --model-dir models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01 --device default --show-level
+```
 
 ## 状態
 

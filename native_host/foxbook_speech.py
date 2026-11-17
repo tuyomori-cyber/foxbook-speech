@@ -12,7 +12,7 @@ import struct
 import sys
 
 MAX_MESSAGE_BYTES = 1024 * 1024
-ALLOWED_EXTENSIONS = frozenset(("fox-voice-editor@foxbook.example",))
+ALLOWED_EXTENSIONS = frozenset(("fox-voice-editor@foxbook.example", "the-session-tools@example.invalid"))
 
 
 def service_socket_path() -> Path:

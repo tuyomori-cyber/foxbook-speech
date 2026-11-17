@@ -22,8 +22,11 @@ from service.reazon import ReazonError, ReazonManager
 MAX_MESSAGE_BYTES: Final = 1024 * 1024
 DEFAULT_ALLOWED = {
     "fox-voice-editor@foxbook.example": frozenset(("whisper", "reazonspeech_k2")),
+    "the-session-tools@example.invalid": frozenset(("reazonspeech_k2",)),
 }
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WAKEWORD_BINARY = PROJECT_ROOT / "build/native/wakeword_kws"
+WAKEWORD_MODEL = PROJECT_ROOT / "models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
 DEFAULT_WHISPER = WhisperConfig(Path("/usr/bin/arecord"), Path("/usr/bin/ffmpeg"),
                                 PROJECT_ROOT.parent / "whisper.cpp/build/bin/whisper-cli",
                                 PROJECT_ROOT.parent / "whisper.cpp/models/ggml-base.bin")
@@ -41,6 +44,8 @@ class SpeechSocketServer:
         self.auto_stopped: dict[str, str] = {}
         self.reazon_users: dict[str, str] = {}
         self.reazon = reazon or DEFAULT_REAZON
+        self.wakeword_processes: dict[str, asyncio.subprocess.Process] = {}
+        self.wakeword_tasks: dict[str, asyncio.Task] = {}
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session_id: str | None = None
@@ -88,6 +93,15 @@ class SpeechSocketServer:
                         self._release_reazon(session_id, owner)
                         events = self.state.fail(session_id, getattr(exc, "code", "ENGINE_START_FAILED"), str(exc))
                 await emit(events)
+                if isinstance(request, dict) and request.get("action") == "start_wakeword" and events and events[0].get("event") == "wakeword_waiting":
+                    try:
+                        process = await asyncio.create_subprocess_exec(str(WAKEWORD_BINARY), "--model-dir", str(WAKEWORD_MODEL), "--report-every", "0", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                        self.wakeword_processes[session_id] = process
+                        self.wakeword_tasks[session_id] = asyncio.create_task(self._watch_wakeword(session_id, process, emit))
+                    except OSError as exc:
+                        await emit([self.state._error(None, "WAKEWORD_START_FAILED", str(exc))])
+                elif isinstance(request, dict) and request.get("action") == "stop_wakeword":
+                    await self._stop_wakeword(session_id)
                 if isinstance(request, dict) and request.get("action") == "start_recording" and events and events[0].get("event") == "started":
                     self.auto_stopped.pop(session_id, None)
                     try:
@@ -112,11 +126,35 @@ class SpeechSocketServer:
                 self.state.disconnect(session_id)
                 await self._cancel(session_id)
                 self.auto_stopped.pop(session_id, None)
+                await self._stop_wakeword(session_id)
             writer.close()
             try:
                 await writer.wait_closed()
             except (ConnectionError, BrokenPipeError):
                 pass
+
+    async def _watch_wakeword(self, session_id, process, emit) -> None:
+        try:
+            while line := await process.stdout.readline():
+                if line.decode("utf-8", errors="replace").startswith("検出: FOX"):
+                    # Release the microphone before notifying the client; it
+                    # will immediately request the short command recording.
+                    if process.returncode is None:
+                        process.terminate()
+                        await process.wait()
+                    await emit([self.state._event("wakeword_detected", state="detected")])
+                    return
+        finally:
+            self.wakeword_processes.pop(session_id, None)
+            self.wakeword_tasks.pop(session_id, None)
+
+    async def _stop_wakeword(self, session_id) -> None:
+        process = self.wakeword_processes.pop(session_id, None)
+        if process and process.returncode is None:
+            process.terminate()
+            await process.wait()
+        task = self.wakeword_tasks.pop(session_id, None)
+        if task and task is not asyncio.current_task(): task.cancel()
 
     async def _watch_recording(self, session_id: str, job: WhisperJob, recording_id: str, engine: str, emit) -> None:
         try:

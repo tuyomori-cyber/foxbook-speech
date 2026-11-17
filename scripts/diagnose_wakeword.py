@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wav", type=Path, help="マイクの代わりにモノラルPCM WAVを解析")
     parser.add_argument("--threshold", type=float, default=0.25, help="検出閾値0〜1（既定: 0.25）")
     parser.add_argument("--show-level", action="store_true", help="arecord入力のピークを2秒ごとに表示")
+    parser.add_argument("--report-every", type=int, default=10, help="CPU/RSS表示間隔。0で非表示（既定: 10）")
     args = parser.parse_args(argv)
     if not 0 <= args.threshold <= 1:
         parser.error("--thresholdは0〜1で指定してください")
@@ -40,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--deviceはarecordかALSA入力でのみ指定できます")
     if args.show_level and (args.wav or args.backend != "arecord"):
         parser.error("--show-levelはarecord入力でのみ使用できます")
+    if args.report_every < 0:
+        parser.error("--report-everyは0以上で指定してください")
     if not args.wav and args.backend == "arecord" and not shutil.which("arecord"):
         print("arecordが見つかりません。", file=sys.stderr)
         return 1
@@ -63,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
                        "--threshold", str(args.threshold), "--device", args.device]
             if args.show_level:
                 command.append("--show-level")
+            command.extend(["--report-every", str(args.report_every)])
         else:
             command = [str(executable), *(f"--{name}={path}" for name, path in files.items()),
                        f"--keywords-file={keywords}", f"--keywords-threshold={args.threshold}",

@@ -4,7 +4,8 @@
 
 ## 現在
 
-- [ ] 【次回】同じモデル・閾値・マイク条件でネイティブ実装の単独診断を試し、Python版とdynabookで検出率・誤検出・CPU・メモリを比較する。Python版は入力レベル表示ありで測定したため、表示の有無も揃える。採用基準は未決定。[検討メモ](specification/ウェイクワード常時待機検討.md)を参照。
+- [ ] 【THE SESSION TOOLS音声操作v1】Native Messaging、ネイティブKWS、3秒ReazonSpeech、結果後の再待機と再生・停止／BPM／音量／Division操作を実機確認済み。音色は対象外。切断回収、Voice Editorとの同時利用、Surface、KWSと録音の自動試験を残す。Voice Editorの任意録音経路は変更しない。
+- [ ] 【次回】USBマイク・閾値0.25・入力レベル表示ありでは、ネイティブ版（CPU 7.24〜8.06%、RSS 52,608KiB）がPython版（CPU 11.58〜11.86%、RSS 68,244〜68,252KiB）より軽かった。ネイティブ版の2秒区間ピークは4.3〜20.7%で、飽和は再現していない。発話回数を定めた検出率、長時間誤検出率、dynabook／Surfaceの同条件比較を行う。[検討メモ](specification/ウェイクワード常時待機検討.md)を参照。
 - [ ] 登録拡張の利用中だけウェイクワード待機を起動する運用を検討する。複数接続の所有権、最後の切断や異常終了での停止・回収、マイク排他、録音への引き継ぎ・監視再開は未設計。現状は独立診断で、service・Firefox連携は未実装。
 - [x] dynabook G83/HSでは既定ALSAのKWS初期化が`Operation not permitted`で失敗し、PortAudioも既定入力を発見できなかった。`arecord`入力方式を追加し、実マイクで検出できることを確認した。
 - [ ] dynabook G83/HSのarecord入力で`HEY FOX`と`FOX`単体を検出。`FOX`は閾値0.1で「まぁまぁ反応し、使えそう」との定性的な評価。テレビ音下5分以上の待機中に誤検出なし。同一診断の`ps`で検出Python CPU平均3.6%・RSS 68,880KB、arecord CPU平均0.0%・RSS 7,828KBを確認。発話回数と成功率、長時間の誤検出率、Surfaceの負荷・電力は未測定。
