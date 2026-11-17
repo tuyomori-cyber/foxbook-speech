@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 from typing import Final
@@ -28,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WAKEWORD_BINARY = PROJECT_ROOT / "build/native/wakeword_kws"
 WAKEWORD_MODEL = PROJECT_ROOT / "models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
 TUNER_WAKEWORD_GUARD_SECONDS = 1.5
+MIRAI_ROOT = PROJECT_ROOT.parent / "foxbook-mirai-test"
 DEFAULT_WHISPER = WhisperConfig(Path("/usr/bin/arecord"), Path("/usr/bin/ffmpeg"),
                                 PROJECT_ROOT.parent / "whisper.cpp/build/bin/whisper-cli",
                                 PROJECT_ROOT.parent / "whisper.cpp/models/ggml-base.bin")
@@ -47,6 +49,23 @@ class SpeechSocketServer:
         self.reazon = reazon or DEFAULT_REAZON
         self.wakeword_processes: dict[str, asyncio.subprocess.Process] = {}
         self.wakeword_tasks: dict[str, asyncio.Task] = {}
+
+    def _wakeword_command(self, tuner: bool = False) -> list[str]:
+        mode = os.environ.get("FOXBOOK_WAKEWORD", "fox")
+        if mode == "fox":
+            command = [str(WAKEWORD_BINARY), "--model-dir", str(WAKEWORD_MODEL), "--report-every", "0"]
+        elif mode == "mirai":
+            runtimes = sorted((MIRAI_ROOT / ".venv/lib").glob("python*/site-packages/onnxruntime/capi/libonnxruntime.so.*"))
+            if not runtimes:
+                raise FileNotFoundError("みらい用ONNX Runtimeが見つかりません")
+            command = [str(PROJECT_ROOT / "build/native/mirai_kws"), "--runtime", str(runtimes[-1]),
+                       "--mel", str(MIRAI_ROOT / "onnx-wakeword/models/melspectrogram.onnx"),
+                       "--model", str(MIRAI_ROOT / "onnx-wakeword/models/ja/mirai_r1.onnx"), "--report-every", "0"]
+        else:
+            raise ValueError("FOXBOOK_WAKEWORDはfoxまたはmiraiを指定してください")
+        if tuner:
+            command.append("--tuner")
+        return command
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         session_id: str | None = None
@@ -102,21 +121,21 @@ class SpeechSocketServer:
                 if isinstance(request, dict) and request.get("action") == "start_tuner" and events and events[0].get("event") == "tuner_started":
                     await self._stop_wakeword(session_id)
                     try:
-                        process = await asyncio.create_subprocess_exec(str(WAKEWORD_BINARY), "--model-dir", str(WAKEWORD_MODEL), "--report-every", "0", "--tuner", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                        process = await asyncio.create_subprocess_exec(*self._wakeword_command(tuner=True), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
                         self.wakeword_processes[session_id] = process
                         tuner_id = events[0]["tunerId"]
                         self.wakeword_tasks[session_id] = asyncio.create_task(
                             self._watch_wakeword(session_id, process, emit, tuner_id=tuner_id))
-                    except OSError as exc:
+                    except (OSError, ValueError) as exc:
                         self.state.handle(session_id, {"version": 1, "action": "stop_tuner", "tunerId": events[0]["tunerId"]})
                         events = [self.state._error(None, "WAKEWORD_START_FAILED", str(exc))]
                 await emit(events)
                 if isinstance(request, dict) and request.get("action") == "start_wakeword" and events and events[0].get("event") == "wakeword_waiting":
                     try:
-                        process = await asyncio.create_subprocess_exec(str(WAKEWORD_BINARY), "--model-dir", str(WAKEWORD_MODEL), "--report-every", "0", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                        process = await asyncio.create_subprocess_exec(*self._wakeword_command(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
                         self.wakeword_processes[session_id] = process
                         self.wakeword_tasks[session_id] = asyncio.create_task(self._watch_wakeword(session_id, process, emit))
-                    except OSError as exc:
+                    except (OSError, ValueError) as exc:
                         await emit([self.state._error(None, "WAKEWORD_START_FAILED", str(exc))])
                 elif isinstance(request, dict) and request.get("action") == "stop_wakeword":
                     await self._stop_wakeword(session_id)
@@ -165,7 +184,7 @@ class SpeechSocketServer:
                         await emit([self.state._event("tuner_pitch", tunerId=tuner_id,
                                                      frequencyHz=frequency if 55 <= frequency <= 1200 else None)])
                     continue
-                if line.decode("utf-8", errors="replace").startswith("検出: FOX"):
+                if line.decode("utf-8", errors="replace").startswith(("検出: FOX", "検出: みらい")):
                     if tuner_id is not None and time.monotonic() - started_at < TUNER_WAKEWORD_GUARD_SECONDS:
                         continue
                     # Release the microphone before notifying the client; it
@@ -184,6 +203,8 @@ class SpeechSocketServer:
                 lease = self.state.lease
                 if lease and lease.kind == "tuner" and lease.session_id == session_id and lease.recording_id == tuner_id:
                     await emit([self.state._error(None, "WAKEWORD_STOPPED", "チューナーの音声待機が停止しました。")])
+            elif self.wakeword_processes.get(session_id) is process:
+                await emit([self.state._error(None, "WAKEWORD_STOPPED", "音声待機が停止しました。")])
         finally:
             if self.wakeword_processes.get(session_id) is process:
                 self.wakeword_processes.pop(session_id, None)

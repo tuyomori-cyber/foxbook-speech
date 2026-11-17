@@ -89,7 +89,7 @@ python3 scripts/install_host.py
 systemctl --user restart foxbook-speech
 ```
 
-Host登録はVoice EditorとTHE SESSION TOOLSの両方を許可する。The Sessionを開いた時、LEDが緑の「FOXを待機中」なら利用可能である。検出中はserviceがKWSを止めてマイクを解放し、3秒のReazonSpeech認識後に待機へ戻る。Voice Editorの手動録音は変更しない。必要なモデルや実行ファイルが不足するとLEDは赤になる。
+Host登録はVoice EditorとTHE SESSION TOOLSの両方を許可する。The Sessionを開いた時、LEDが緑の「呼びかけを待機中」なら利用可能である。既定は`FOX`だが、今後の実機検証では下記の実験設定で「みらい」を使う。検出中はserviceがKWSを止めてマイクを解放し、3秒のReazonSpeech認識後に待機へ戻る。Voice Editorの手動録音は変更しない。必要なモデルや実行ファイルが不足するとLEDは赤になる。
 
 service単体の実機録音は、Voice Editorを使わず次で確認できる。実行中は指定秒数だけ話し、最後の`result`イベントの`text`を確認する。`Ctrl+C`なら録音を取消する。
 
@@ -100,6 +100,46 @@ python3 scripts/diagnose_recording.py --seconds 5
 ## ウェイクワードの単独実験
 
 `diagnose_wakeword.py`は共有serviceとは別の実験用コマンドです。英語KWSモデルで`FOX`または`HEY FOX`の検出だけを試し、録音・認識の開始やFirefoxへの通知は行いません。マイク音声を保存しません。THE SESSION TOOLSの実運用ではserviceがKWSと録音の引継ぎを管理しますが、この診断を実行中は他の音声録音を同時に使わないでください。
+
+### 「みらい」のC++比較診断
+
+これは[onnx-wakeword](https://github.com/voicute/onnx-wakeword)の「みらい」モデルを使う独立した実験で、FOXや共有serviceの設定は変更しません。Python版の`mic_test.py`と同じモデル、閾値0.5、L1連続2回（最大2フレームの間隔を許容）、L3待機1.5秒を使います。入力は`arecord`の既定デバイスの16kHzモノラルです。Python版のPortAudio入力とはデバイスや音声経路が異なる場合があります。実行中はTHE SESSION TOOLSのタブとVoice Editor、他のマイク診断を終了してください。
+
+別途`~/project/foxbook-mirai-test/onnx-wakeword`に公式リポジトリをcloneし、`~/project/foxbook-mirai-test/.venv`に`onnx-wakeword`を導入済みとします。ビルドにはONNX Runtime公式C APIヘッダーが必要です（v1.22以降のruntimeを使用）。
+
+```bash
+mkdir -p /tmp/foxbook-onnxruntime-include
+curl -fL https://raw.githubusercontent.com/microsoft/onnxruntime/v1.22.0/include/onnxruntime/core/session/onnxruntime_c_api.h -o /tmp/foxbook-onnxruntime-include/onnxruntime_c_api.h
+make -C native mirai-kws
+```
+
+`foxbook-speech`のディレクトリから、Python仮想環境のONNX Runtimeを指定して実行します。音声は保存せず、10秒ごとに診断プロセス自身のCPU使用率とRSSを表示します（`arecord`の負荷は含みません）。終了は`Ctrl+C`です。
+
+```bash
+MIRAI_ROOT="$HOME/project/foxbook-mirai-test"
+ORT_LIB=$("$MIRAI_ROOT/.venv/bin/python" -c 'import pathlib, onnxruntime; p=pathlib.Path(onnxruntime.__file__).parent / "capi"; print(next(p.glob("libonnxruntime.so.*")))')
+build/native/mirai_kws --runtime "$ORT_LIB" \
+  --mel "$MIRAI_ROOT/onnx-wakeword/models/melspectrogram.onnx" \
+  --model "$MIRAI_ROOT/onnx-wakeword/models/ja/mirai_r1.onnx"
+```
+
+比較時は同じマイク・距離・声量で発話回数と検出回数、無発話時の誤検出を記録します。Python版の`mic_test.py --info models/ja/model_info.json`のCPU/RSSは別端末から`ps -C python -o pid,pcpu,rss,args`で確認できます（CPUは起動以来の平均）。C++版は区間CPUなので比較時は測定範囲の違いに注意してください。C++版の`--raw FILE`では16kHzモノラルS16_LEの生PCMを読み、各窓のスコアを出力できます。
+
+#### THE SESSION TOOLSでの実験
+
+上記のビルドとモデル配置後、動作中の録音を終了し、次でユーザーserviceを「みらい」に切り替えます。systemdユーザーマネージャーの環境に設定するため、ログアウト等で初期化される場合があります。
+
+```bash
+systemctl --user set-environment FOXBOOK_WAKEWORD=mirai
+systemctl --user restart foxbook-speech
+```
+
+THE SESSION TOOLS拡張とThe Sessionタブを再読み込みし、待機中に「みらい」、続いてコマンドを話します。チューナー中も「みらい」単独で終了する実装です。dynabookのFirefoxで発話検出、非アクティブ時の一時停止・復帰、タブ終了時のマイク解放を確認しました。コマンド全種とチューナーの動作、Surfaceは引き続き確認します。今後は「みらい」を優先して検証しますが、コードの既定はFOXです。FOXへ戻すには次を実行してからタブを再読み込みします。
+
+```bash
+systemctl --user unset-environment FOXBOOK_WAKEWORD
+systemctl --user restart foxbook-speech
+```
 
 ReazonSpeech用環境の`../reazonspeech/.venv/bin/python`と`sherpa-onnx`、`arecord`、次のモデルが必要です。公式配布モデルのREADMEにはApache License 2.0と記載されています。ファイルはGit管理しません。
 

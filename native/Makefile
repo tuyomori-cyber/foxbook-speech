@@ -17,5 +17,15 @@ $(TARGET): wakeword_kws.cc tuner_pitch.h
 	mkdir -p $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -I$(INCLUDE_DIR) $< -L$(LIB_DIR) -lsherpa-onnx-c-api -Wl,-rpath,$(abspath $(LIB_DIR)) -o $@
 
+# Standalone Mirai experiment; header is obtained separately, runtime is loaded
+# at execution time, keeping the existing sherpa-onnx build independent.
+ONNXRUNTIME_INCLUDE ?= /tmp/foxbook-onnxruntime-include
+.PHONY: mirai-kws
+mirai-kws: $(BUILD_DIR)/mirai_kws
+
+$(BUILD_DIR)/mirai_kws: mirai_kws.cc tuner_pitch.h
+	mkdir -p $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -I$(ONNXRUNTIME_INCLUDE) $< -ldl -o $@
+
 clean:
 	rm -rf $(BUILD_DIR)
