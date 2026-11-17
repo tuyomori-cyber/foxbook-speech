@@ -13,7 +13,7 @@ CXXFLAGS ?= -O2 -std=c++17 -Wall -Wextra -Wpedantic
 
 native-kws: $(TARGET)
 
-$(TARGET): wakeword_kws.cc
+$(TARGET): wakeword_kws.cc tuner_pitch.h
 	mkdir -p $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -I$(INCLUDE_DIR) $< -L$(LIB_DIR) -lsherpa-onnx-c-api -Wl,-rpath,$(abspath $(LIB_DIR)) -o $@
 

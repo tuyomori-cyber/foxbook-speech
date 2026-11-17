@@ -24,6 +24,7 @@ class Lease:
     session_id: str
     engine: str
     phase: str = "recording"
+    kind: str = "recording"
 
 
 class SpeechState:
@@ -47,7 +48,10 @@ class SpeechState:
             return []
         events = []
         if self.lease and self.lease.session_id == session_id:
-            events.append(self._event("cancelled", recordingId=self.lease.recording_id, state="idle"))
+            if self.lease.kind == "tuner":
+                events.append(self._event("tuner_stopped", tunerId=self.lease.recording_id, state="idle"))
+            else:
+                events.append(self._event("cancelled", recordingId=self.lease.recording_id, state="idle"))
             self.lease = None
         del self.sessions[session_id]
         return events
@@ -68,6 +72,8 @@ class SpeechState:
             "get_status": {"version", "action"},
             "start_wakeword": {"version", "action"},
             "stop_wakeword": {"version", "action"},
+            "start_tuner": {"version", "action"},
+            "stop_tuner": {"version", "action", "tunerId"},
         }
         if action not in allowed or set(request) != allowed[action]:
             return [self._error(None, "INVALID_REQUEST", "要求形式が正しくありません。")]
@@ -94,6 +100,22 @@ class SpeechState:
         if action == "stop_wakeword":
             session.wakeword_active = False
             return [self._event("wakeword_stopped", state="idle")]
+        if action == "start_tuner":
+            if self.lease:
+                return [self._error(self.lease.recording_id, "BUSY", "他の録音または認識を処理中です。")]
+            if not session.microphone_ready:
+                return [self._error(None, "MICROPHONE_NOT_READY", "マイクの確認が完了していません。")]
+            tuner_id = secrets.token_hex(16)
+            session.wakeword_active = False
+            self.lease = Lease(tuner_id, session_id, session.engine, phase="tuning", kind="tuner")
+            return [self._event("tuner_started", tunerId=tuner_id, state="tuning")]
+        if action == "stop_tuner":
+            tuner_id = request["tunerId"]
+            if (not isinstance(tuner_id, str) or not self.lease or self.lease.kind != "tuner"
+                    or self.lease.recording_id != tuner_id or self.lease.session_id != session_id):
+                return [self._error(tuner_id if isinstance(tuner_id, str) else None, "STALE_TUNER", "チューナーの所有者または識別子が一致しません。")]
+            self.lease = None
+            return [self._event("tuner_stopped", tunerId=tuner_id, state="idle")]
         if action == "start_recording":
             if self.lease:
                 return [self._error(self.lease.recording_id, "BUSY", "他の録音または認識を処理中です。")]
@@ -102,6 +124,7 @@ class SpeechState:
             if session.engine not in session.ready_engines:
                 return [self._error(None, "ENGINE_NOT_READY", "認識エンジンの準備が完了していません。")]
             recording_id = secrets.token_hex(16)
+            session.wakeword_active = False
             self.lease = Lease(recording_id, session_id, session.engine)
             return [self._event("started", recordingId=recording_id, state="recording", engine=session.engine,
                                 engineGeneration=self.engine_generations[session.engine])]

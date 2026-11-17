@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "sherpa-onnx/c-api/c-api.h"
+#include "tuner_pitch.h"
 
 namespace {
 
@@ -31,6 +32,7 @@ struct Options {
   float threshold = 0.25F;
   int report_every = 10;
   bool show_level = false;
+  bool tuner = false;
 };
 
 void OnSignal(int) { g_running = 0; }
@@ -58,6 +60,7 @@ Options ParseOptions(int argc, char **argv) {
     else if (argument == "--threshold") options.threshold = std::stof(value());
     else if (argument == "--report-every") options.report_every = std::stoi(value());
     else if (argument == "--show-level") options.show_level = true;
+    else if (argument == "--tuner") options.tuner = true;
     else if (argument == "--help" || argument == "-h") Usage(argv[0]);
     else Usage(argv[0], "不明な引数: " + argument);
   }
@@ -157,6 +160,10 @@ int main(int argc, char **argv) {
     auto next_level = last_report + std::chrono::seconds(2);
     float left_peak = 0;
     float right_peak = 0;
+    std::vector<float> pitch_samples;
+    pitch_samples.reserve(2048 + 1024);
+    size_t sample_index = 0;
+    size_t pitch_hop = 0;
     while (g_running) {
       const size_t count = std::fread(pcm.data(), sizeof(int16_t), pcm.size(), input);
       if (count == 0) break;
@@ -164,10 +171,20 @@ int main(int argc, char **argv) {
       left.clear();
       for (size_t index = 0; index < count; index += 2) {
         left.push_back(pcm[index] / 32768.0F);
+        if (options.tuner && sample_index++ % 4 == 0) {
+          pitch_samples.push_back(left.back());
+          ++pitch_hop;
+        }
         if (options.show_level) {
           left_peak = std::max(left_peak, std::abs(left.back()));
           right_peak = std::max(right_peak, std::abs(pcm[index + 1] / 32768.0F));
         }
+      }
+      if (options.tuner && pitch_samples.size() >= 2048 && pitch_hop >= 1102) {
+        pitch_samples.erase(pitch_samples.begin(), pitch_samples.end() - 2048);
+        const double frequency = EstimateTunerPitch(pitch_samples);
+        std::cout << "PITCH: " << frequency << "\n" << std::flush;
+        pitch_hop = 0;
       }
       SherpaOnnxOnlineStreamAcceptWaveform(stream, 44100, left.data(), static_cast<int32_t>(left.size()));
       while (SherpaOnnxIsKeywordStreamReady(spotter, stream)) {

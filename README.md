@@ -29,6 +29,48 @@ Native Messaging Host のコードと登録名は一つですが、Firefox は�
 
 `native_host/foxbook_speech.py` はNative Messagingのバイナリフレームを検証してUnix socketへ中継します。HostをFirefoxへ登録するスクリプトは `scripts/install_host.py` です。serviceは`arecord`、`ffmpeg`と固定されたエンジン・モデルを使います。
 
+## 初回導入
+
+以下はTHE SESSION TOOLSの音声操作とVoice Editorの両方に必要なローカル環境です。各リポジトリは同じ親ディレクトリへ配置します。Linuxでは`arecord`（`alsa-utils`）、`ffmpeg`、C++ビルド用の`cmake`とコンパイラ、ReazonSpeechモデル取得用のGit LFSも必要です。Ubuntu/Debian系では次が一例です（他のディストリビューションでは対応するパッケージ名を使います）。
+
+```bash
+sudo apt install alsa-utils ffmpeg cmake build-essential git-lfs
+git lfs install
+```
+
+```bash
+git clone https://github.com/tuyomori-cyber/foxbook-speech.git
+git clone https://github.com/ggml-org/whisper.cpp.git
+git clone https://huggingface.co/reazon-research/reazonspeech-k2-v2.git reazonspeech
+```
+
+ReazonSpeechモデルの取得にはGit LFSが必要です。`reazonspeech`でPython環境を作り、`sherpa-onnx`を導入します。
+
+```bash
+cd reazonspeech
+python3 -m venv .venv
+.venv/bin/pip install sherpa-onnx
+```
+
+Whisper.cppはCLIとbaseモデルを用意します。THE SESSION TOOLSの音声操作はReazonSpeechを使うが、共有serviceの導入条件としてWhisperの固定パスも満たします。
+
+```bash
+cd ../whisper.cpp
+cmake -B build
+cmake --build build --config Release
+./models/download-ggml-model.sh base
+```
+
+次にこのリポジトリへ戻り、KWSモデル、Native Host、serviceを導入します。KWSモデルはGit管理しません。
+
+```bash
+cd ../foxbook-speech
+mkdir -p models/kws
+curl -fL -o /tmp/foxbook-kws-gigaspeech.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
+tar -xjf /tmp/foxbook-kws-gigaspeech.tar.bz2 -C models/kws
+make -C native native-kws
+```
+
 `systemd/foxbook-speech.service.in` はユーザー単位の常駐service templateです。導入時は次を順に実行します。`--enable` はserviceを起動するため、実機の固定パスと依存ファイルを確認した後にだけ指定します。
 
 ```bash
@@ -39,7 +81,7 @@ python3 scripts/install_service.py --enable
 
 ### THE SESSION TOOLS音声操作の導入
 
-`FOX`によるメトロノーム音声操作には、上記に加えてネイティブKWSのビルドとKWSモデルが必要です。初回だけ順に実行し、その後はTHE SESSION TOOLSを再読み込みします。
+`FOX`によるメトロノーム音声操作には、初回導入で配置したネイティブKWSとKWSモデルが必要です。初回導入を完了後、THE SESSION TOOLSを再読み込みします。
 
 ```bash
 make -C native native-kws
@@ -57,7 +99,7 @@ python3 scripts/diagnose_recording.py --seconds 5
 
 ## ウェイクワードの単独実験
 
-`diagnose_wakeword.py`は共有serviceとは別の実験用コマンドです。英語KWSモデルで`FOX`または`HEY FOX`の検出だけを試し、録音・認識の開始やFirefoxへの通知は行いません。マイク音声を保存しません。実行中は他の音声録音を同時に使わないでください。serviceとのマイク排他は未実装です。
+`diagnose_wakeword.py`は共有serviceとは別の実験用コマンドです。英語KWSモデルで`FOX`または`HEY FOX`の検出だけを試し、録音・認識の開始やFirefoxへの通知は行いません。マイク音声を保存しません。THE SESSION TOOLSの実運用ではserviceがKWSと録音の引継ぎを管理しますが、この診断を実行中は他の音声録音を同時に使わないでください。
 
 ReazonSpeech用環境の`../reazonspeech/.venv/bin/python`と`sherpa-onnx`、`arecord`、次のモデルが必要です。公式配布モデルのREADMEにはApache License 2.0と記載されています。ファイルはGit管理しません。
 

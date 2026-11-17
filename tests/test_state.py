@@ -59,6 +59,17 @@ class SpeechStateTest(unittest.TestCase):
         self.assertEqual(self.request(self.other, "prepare_engine", engine="reazonspeech_k2")["code"], "ENGINE_NOT_ALLOWED")
         self.assertEqual(self.request(self.other, "prepare_engine", engine="whisper")["engine"], "whisper")
 
+    def test_tuner_uses_the_global_lease_and_only_its_owner_can_stop_it(self) -> None:
+        self.assertEqual(self.request(self.other, "start_tuner")["code"], "MICROPHONE_NOT_READY")
+        self.ready(self.other)
+        tuner = self.request(self.other, "start_tuner")
+        self.assertEqual((tuner["event"], tuner["state"]), ("tuner_started", "tuning"))
+        self.assertEqual(self.request(self.voice, "start_recording")["code"], "BUSY")
+        self.assertEqual(self.request(self.voice, "stop_tuner", tunerId=tuner["tunerId"])["code"], "STALE_TUNER")
+        self.assertEqual(self.request(self.other, "stop_tuner", tunerId=tuner["tunerId"])["event"], "tuner_stopped")
+        self.ready(self.voice)
+        self.assertEqual(self.request(self.voice, "start_recording")["event"], "started")
+
 
 if __name__ == "__main__":
     unittest.main()
