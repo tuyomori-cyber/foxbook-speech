@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>拡張間通信の試作</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <h1>拡張間通信の試作</h1>
+  <p>操作対象を選び、定義を取得します。THE SESSION TOOLSを選んだ場合、実際にテンポが5上がります。</p>
+  <label for="target">操作対象</label>
+  <select id="target"><option value="dummy">ダミー（模擬操作）</option><option value="session">THE SESSION TOOLS（実際のテンポ変更）</option></select>
+  <button type="button" id="get">定義を取得</button>
+  <button type="button" id="execute" disabled>模擬操作を送信</button>
+  <p id="result" role="status">未実行</p>
+  <script src="popup.js"></script>
+</body>
+</html>

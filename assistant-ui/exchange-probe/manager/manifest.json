@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Foxbook 操作管理 試作",
+  "version": "0.1.0",
+  "description": "ダミー拡張からの定義取得と模擬操作を検証します。",
+  "action": { "default_title": "拡張間通信の試作", "default_popup": "popup.html" },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "foxbook-exchange-manager@foxbook.example",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  }
+}

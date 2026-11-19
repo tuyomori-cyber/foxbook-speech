@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Foxbook 背景処理 検証",
+  "version": "0.1.0",
+  "description": "表示ページに依存しないFirefoxイベント処理の試験。音声は使用しません。",
+  "permissions": ["storage", "alarms"],
+  "background": { "scripts": ["background.js"] },
+  "action": { "default_title": "背景処理の検証", "default_popup": "popup.html" },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "foxbook-background-probe@foxbook.example",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  }
+}

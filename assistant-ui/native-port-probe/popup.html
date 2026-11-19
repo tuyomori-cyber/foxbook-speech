@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Native Portの検証</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <h1>Native Portの検証</h1>
+  <p>開始後にこの画面を閉じ、表示できないページで選択した時間以上待ってから再び開きます。</p>
+  <label for="duration">観測時間</label>
+  <select id="duration"><option value="90">90秒</option><option value="300">5分</option></select>
+  <button type="button" id="start">検証を開始</button>
+  <button type="button" id="stop">接続を終了</button>
+  <p id="result" role="status">状態を確認中</p>
+  <p>音声・マイク・既存の音声サービスは使用しません。</p>
+  <script src="popup.js"></script>
+</body>
+</html>

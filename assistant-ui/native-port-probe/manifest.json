@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Foxbook Native Port 検証",
+  "version": "0.1.0",
+  "description": "ページ非依存のNative Messaging接続を検証します。音声は使用しません。",
+  "permissions": ["storage", "nativeMessaging"],
+  "background": { "scripts": ["background.js"] },
+  "action": { "default_title": "Native Portの検証", "default_popup": "popup.html" },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "foxbook-native-port-probe@foxbook.example",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import unittest
 from unittest.mock import patch
 
@@ -10,12 +11,16 @@ from service.state import SpeechState
 
 class FakeProcess:
     def __init__(self):
+        self.pid = None
         self.stdout = asyncio.StreamReader()
         self.returncode = None
 
     def terminate(self):
         self.returncode = -15
         self.stdout.feed_eof()
+
+    def kill(self):
+        self.terminate()
 
     async def wait(self):
         return self.returncode
@@ -58,16 +63,17 @@ class TunerWakewordTest(unittest.IsolatedAsyncioTestCase):
         await self.server._watch_wakeword(self.session, self.process, emit)
         self.assertEqual([event["event"] for event in self.events], ["wakeword_detected"])
 
-    def test_mirai_selection_and_default_fox(self):
+    def test_default_mirai_and_explicit_selection(self):
         with patch.dict("os.environ", {"FOXBOOK_WAKEWORD": "fox"}):
             self.assertTrue(self.server._wakeword_command()[0].endswith("wakeword_kws"))
-        with patch.dict("os.environ", {"FOXBOOK_WAKEWORD": "mirai"}):
-            with patch("service.server.MIRAI_ROOT") as root:
-                runtime = root / ".venv/lib"
-                runtime.glob.return_value = ["/runtime/libonnxruntime.so.1"]
-                command = self.server._wakeword_command(tuner=True)
-            self.assertTrue(command[0].endswith("mirai_kws"))
-            self.assertIn("--tuner", command)
+        for environment in ({}, {"FOXBOOK_WAKEWORD": "mirai"}):
+            with self.subTest(environment=environment), patch.dict("os.environ", environment, clear=True):
+                with patch("service.server.MIRAI_ROOT") as root:
+                    runtime = root / ".venv/lib"
+                    runtime.glob.return_value = ["/runtime/libonnxruntime.so.1"]
+                    command = self.server._wakeword_command(tuner=True)
+                self.assertTrue(command[0].endswith("mirai_kws"))
+                self.assertIn("--tuner", command)
 
     async def test_manual_stop_cancels_watcher_without_detection_or_error(self):
         task = asyncio.create_task(self.server._watch_wakeword(self.session, self.process, self.emit, tuner_id=self.tuner_id))
@@ -76,6 +82,13 @@ class TunerWakewordTest(unittest.IsolatedAsyncioTestCase):
         await self.server._stop_wakeword(self.session)
         await asyncio.gather(task, return_exceptions=True)
         self.assertEqual(self.events, [])
+        self.assertEqual(self.process.returncode, -15)
+
+    async def test_stop_terminates_the_dedicated_process_group(self):
+        self.process.pid = 4321
+        with patch("service.server.os.killpg", side_effect=lambda _pid, _signal: self.process.terminate()) as killpg:
+            await self.server._stop_wakeword(self.session)
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
         self.assertEqual(self.process.returncode, -15)
 
     async def test_unexpected_exit_reports_error(self):

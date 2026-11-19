@@ -1,0 +1,5 @@
+body { box-sizing: border-box; width: 300px; margin: 0; padding: 14px; font: 14px/1.5 system-ui, sans-serif; color: #202b35; }
+h1 { margin: 0; font-size: 16px; }
+button { display: block; width: 100%; min-height: 36px; margin: 8px 0; font: inherit; }
+select { display: block; width: 100%; min-height: 36px; font: inherit; }
+p { margin: 10px 0; overflow-wrap: anywhere; }

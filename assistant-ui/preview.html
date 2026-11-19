@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>音声アシスタント UI 試作</title>
+  <link rel="stylesheet" href="preview.css">
+</head>
+<body>
+  <h1>音声アシスタント UI 試作</h1>
+  <p>表示とドラッグ操作の確認用です。音声認識やマイクは動作しません。</p>
+  <label for="state">表示する状態</label>
+  <select id="state">
+    <option value="disconnected">未接続</option>
+    <option value="waiting">呼びかけを待機中</option>
+    <option value="recognizing">認識中</option>
+    <option value="choosing">候補を選択中</option>
+    <option value="error">サービスエラー</option>
+  </select>
+  <p id="result" role="status"></p>
+  <script src="preview.js"></script>
+</body>
+</html>

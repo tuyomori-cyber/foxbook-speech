@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "appId": "dummy_metronome",
+  "name": "ダミーメトロノーム",
+  "commands": [{ "id": "preview_tempo_increase", "label": "テンポを少し上げる（模擬）", "phrases": ["テンポを少し上げて"] }]
+}

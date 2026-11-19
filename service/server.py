@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import time
 from pathlib import Path
 from typing import Final
@@ -51,7 +52,7 @@ class SpeechSocketServer:
         self.wakeword_tasks: dict[str, asyncio.Task] = {}
 
     def _wakeword_command(self, tuner: bool = False) -> list[str]:
-        mode = os.environ.get("FOXBOOK_WAKEWORD", "fox")
+        mode = os.environ.get("FOXBOOK_WAKEWORD", "mirai")
         if mode == "fox":
             command = [str(WAKEWORD_BINARY), "--model-dir", str(WAKEWORD_MODEL), "--report-every", "0"]
         elif mode == "mirai":
@@ -121,7 +122,8 @@ class SpeechSocketServer:
                 if isinstance(request, dict) and request.get("action") == "start_tuner" and events and events[0].get("event") == "tuner_started":
                     await self._stop_wakeword(session_id)
                     try:
-                        process = await asyncio.create_subprocess_exec(*self._wakeword_command(tuner=True), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                        process = await asyncio.create_subprocess_exec(*self._wakeword_command(tuner=True), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                                                                       start_new_session=True)
                         self.wakeword_processes[session_id] = process
                         tuner_id = events[0]["tunerId"]
                         self.wakeword_tasks[session_id] = asyncio.create_task(
@@ -132,7 +134,8 @@ class SpeechSocketServer:
                 await emit(events)
                 if isinstance(request, dict) and request.get("action") == "start_wakeword" and events and events[0].get("event") == "wakeword_waiting":
                     try:
-                        process = await asyncio.create_subprocess_exec(*self._wakeword_command(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                        process = await asyncio.create_subprocess_exec(*self._wakeword_command(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                                                                       start_new_session=True)
                         self.wakeword_processes[session_id] = process
                         self.wakeword_tasks[session_id] = asyncio.create_task(self._watch_wakeword(session_id, process, emit))
                     except (OSError, ValueError) as exc:
@@ -189,9 +192,7 @@ class SpeechSocketServer:
                         continue
                     # Release the microphone before notifying the client; it
                     # will immediately request the short command recording.
-                    if process.returncode is None:
-                        process.terminate()
-                        await process.wait()
+                    await self._terminate_wakeword_process(process)
                     if tuner_id is not None:
                         lease = self.state.lease
                         if lease and lease.kind == "tuner" and lease.session_id == session_id and lease.recording_id == tuner_id:
@@ -215,11 +216,40 @@ class SpeechSocketServer:
         task = self.wakeword_tasks.pop(session_id, None)
         if task and task is not asyncio.current_task():
             task.cancel()
-        if process and process.returncode is None:
+        if process:
+            await self._terminate_wakeword_process(process)
+
+    @staticmethod
+    async def _terminate_wakeword_process(process) -> None:
+        if process.returncode is not None:
+            return
+        pid = getattr(process, "pid", None)
+        if pid is None:
             try:
                 process.terminate()
             except ProcessLookupError:
                 pass
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if process.returncode is not None:
+            await process.wait()
+            return
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            if pid is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            else:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             await process.wait()
 
     async def _watch_recording(self, session_id: str, job: WhisperJob, recording_id: str, engine: str, emit) -> None:

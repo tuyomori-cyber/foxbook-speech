@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Foxbook 操作対象 試作",
+  "version": "0.1.0",
+  "description": "拡張間の定義取得とダミー操作を検証します。",
+  "background": { "scripts": ["background.js"] },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "foxbook-exchange-target@foxbook.example",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
+  }
+}
