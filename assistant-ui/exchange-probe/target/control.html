@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>操作対象の試験設定</title></head>
+<body>
+<h1>操作対象の試験設定</h1>
+<p>ダミーの模擬操作です。実際のテンポは変更しません。</p>
+<label for="mode">試験モード</label>
+<select id="mode">
+<option value="normal">正常応答</option>
+<option value="delay_response">操作後、8秒遅れて応答</option>
+<option value="delay_execute">8秒遅れて操作・応答</option>
+<option value="no_response">操作要求に無応答</option>
+<option value="no_definition">定義取得に無応答</option>
+</select>
+<button id="reset" type="button">操作記録を消去</button>
+<p id="status" role="status"></p>
+<h2>模擬操作の記録</h2><p id="count"></p><ol id="operations"></ol>
+<p>時刻はこの端末の時刻です。保留中の遅延操作は、モード変更や記録消去では取り消せません。</p>
+<script src="control.js"></script></body></html>
